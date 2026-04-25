@@ -1,36 +1,85 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Gastos de Benja
 
-## Getting Started
+PWA para tracking de gastos personales con Mercado Pago, efectivo y splits sin nombres. Telegram es la entrada rapida; la web es la trastienda para dashboard, edicion, inbox, reglas y conciliacion asistida.
 
-First, run the development server:
+## Estado actual
+
+- Next.js App Router + Tailwind.
+- Dashboard navegable con datos demo.
+- Pantallas: dashboard, carga manual, splits, inbox y reglas.
+- Migraciones Supabase completas para `transactions`, `mp_inbox`, `mp_movements`, `split_claims`, `split_repayments`, `auto_rules`, categorias y wallets.
+- Seeds con 12 categorias iniciales y reglas predefinidas.
+- Edge Functions scaffold:
+  - `ingest-mp-email`
+  - `telegram-webhook`
+  - `sync-mp-report`
+  - `split-reminders`
+- Worker de Cloudflare para reenviar mails de Mercado Pago.
+- Parsers y helpers de reglas/match listos para conectar al backend real.
+
+## Desarrollo
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abrir `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Variables necesarias
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_VAPID_PUBLIC_KEY=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+EMAIL_INGEST_SECRET=
+TELEGRAM_WEBHOOK_SECRET=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+CRON_SECRET=
+MP_ACCESS_TOKEN=
+MP_REPORT_LOOKBACK_DAYS=3
+```
 
-## Learn More
+## Supabase
 
-To learn more about Next.js, take a look at the following resources:
+Aplicar:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+supabase db push
+supabase functions deploy ingest-mp-email
+supabase functions deploy telegram-webhook
+supabase functions deploy sync-mp-report
+supabase functions deploy split-reminders
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+El job `/sync-mp-report` puede recibir filas de reporte ya validadas (`rows`), un CSV exportado (`csv`) o descargar automaticamente el reporte desde Mercado Pago usando `MP_ACCESS_TOKEN`.
 
-## Deploy on Vercel
+## Flujo de transferencias MP
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Las transferencias entrantes no dependen del mail. Se cargan desde el reporte de Mercado Pago cada 12 horas:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- 00:00 Argentina
+- 12:00 Argentina
+
+En Supabase Cron eso se programa como `0 3,15 * * *`, porque el cron corre en UTC y Argentina es UTC-3.
+
+`/sync-mp-report` acepta `rows` ya parseadas, un `csv` del reporte o, si no recibe nada, usa `MP_ACCESS_TOKEN` para:
+
+1. Buscar reportes procesados recientes.
+2. Si no hay uno listo, crear un reporte de los ultimos `MP_REPORT_LOOKBACK_DAYS` dias.
+3. Consultar la tarea durante unos segundos.
+4. Descargar el CSV si ya quedo procesado.
+
+Cuando importa entradas nuevas (`TRANSACTION_AMOUNT > 0`), no las cierra automaticamente. Cada movimiento queda con `review_status='needs_review'`. Telegram pregunta una por una:
+
+- Pago de split
+- Mensualidad
+- Otro ingreso
+- Descartar
+
+Si hay un match claro contra un split abierto por monto y ventana temporal, el bot lo muestra como sugerencia, pero igual espera confirmacion.
+
+Para que funcione sin la compu prendida, cargar `MP_ACCESS_TOKEN` como secreto de Supabase. El token se obtiene desde Mercado Pago Developers y no debe exponerse en frontend ni commitearse.

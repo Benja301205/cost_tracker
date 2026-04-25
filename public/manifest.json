@@ -1,0 +1,17 @@
+{
+  "name": "Gastos de Benja",
+  "short_name": "Gastos",
+  "description": "Tracking personal de gastos, Mercado Pago, efectivo y splits.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#f7f5ef",
+  "theme_color": "#f7f5ef",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
