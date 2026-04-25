@@ -13,6 +13,8 @@ type TransactionRow = {
   kind: "expense" | "income" | "transfer";
   merchant: string | null;
   description: string | null;
+  category_id: string | null;
+  wallet_id: string | null;
   categoryName: string | null;
   walletName: "mp" | "cash" | null;
 };
@@ -23,13 +25,10 @@ export default async function DashboardPage() {
   const data = await loadDashboardData(monthStart);
 
   const categories = data.categories;
-  const transactions = (data.transactions as unknown as Array<Omit<TransactionRow, "categoryName" | "walletName"> & {
-    categories: { name: string } | { name: string }[] | null;
-    wallets: { name: "mp" | "cash" } | { name: "mp" | "cash" }[] | null;
-  }>).map((transaction) => ({
+  const transactions = data.transactions.map((transaction) => ({
     ...transaction,
-    categoryName: Array.isArray(transaction.categories) ? transaction.categories[0]?.name ?? null : transaction.categories?.name ?? null,
-    walletName: Array.isArray(transaction.wallets) ? transaction.wallets[0]?.name ?? null : transaction.wallets?.name ?? null,
+    categoryName: data.categoryNamesById.get(transaction.category_id ?? "") ?? null,
+    walletName: data.walletNamesById.get(transaction.wallet_id ?? "") ?? null,
   }));
   const walletBalances = data.walletBalances;
   const splits = data.splits;
@@ -160,6 +159,7 @@ async function loadDashboardData(monthStart: string) {
       categoriesResult,
       transactionsResult,
       walletResult,
+      walletsResult,
       splitResult,
       repaymentResult,
       movementResult,
@@ -168,11 +168,12 @@ async function loadDashboardData(monthStart: string) {
       supabase.from("categories").select("id,name,sort_order").order("sort_order"),
       supabase
         .from("transactions")
-        .select("id,amount_ars,occurred_at,kind,merchant,description,categories(name),wallets(name)")
+        .select("id,amount_ars,occurred_at,kind,merchant,description,category_id,wallet_id")
         .gte("occurred_at", monthStart)
         .order("occurred_at", { ascending: false })
         .limit(80),
       supabase.from("wallet_balances").select("name,balance_ars"),
+      supabase.from("wallets").select("id,name"),
       supabase.from("split_claim_status").select("total_amount_ars,pending_amount_ars,calculated_status"),
       supabase.from("split_repayments").select("amount_ars,created_at").gte("created_at", monthStart),
       supabase.from("mp_movements").select("id").eq("match_status", "unmatched").eq("direction", "in"),
@@ -183,6 +184,7 @@ async function loadDashboardData(monthStart: string) {
       categoriesResult.error,
       transactionsResult.error,
       walletResult.error,
+      walletsResult.error,
       splitResult.error,
       repaymentResult.error,
       movementResult.error,
@@ -191,8 +193,10 @@ async function loadDashboardData(monthStart: string) {
 
     return {
       categories: categoriesResult.data ?? [],
-      transactions: transactionsResult.data ?? [],
+      transactions: (transactionsResult.data ?? []) as Array<Omit<TransactionRow, "categoryName" | "walletName">>,
+      categoryNamesById: new Map((categoriesResult.data ?? []).map((category) => [category.id, category.name])),
       walletBalances: walletResult.data ?? [],
+      walletNamesById: new Map((walletsResult.data ?? []).map((wallet) => [wallet.id, wallet.name as "mp" | "cash"])),
       splits: splitResult.data ?? [],
       repayments: repaymentResult.data ?? [],
       unmatchedCount: movementResult.data?.length ?? 0,
@@ -204,7 +208,9 @@ async function loadDashboardData(monthStart: string) {
     return {
       categories: [],
       transactions: [],
+      categoryNamesById: new Map<string, string>(),
       walletBalances: [],
+      walletNamesById: new Map<string, "mp" | "cash">(),
       splits: [],
       repayments: [],
       unmatchedCount: 0,
