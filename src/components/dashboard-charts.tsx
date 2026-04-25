@@ -2,7 +2,6 @@
 
 import { useSyncExternalStore } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { monthlyBars } from "@/lib/demo-data";
 import { money } from "@/lib/utils";
 
 const colors = ["#10231c", "#d7f36d", "#2f7d68", "#f2b84b", "#ef6f6c", "#6c7ae0", "#8c6a48"];
@@ -27,14 +26,14 @@ export function CategoryPie({ data }: { data: { name: string; total: number }[] 
   );
 }
 
-export function MonthlyBars() {
+export function MonthlyBars({ data }: { data: { month: string; ingresos: number; gastos: number }[] }) {
   const mounted = useMounted();
   if (!mounted) return <div className="h-72" />;
 
   return (
     <div className="h-72">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={monthlyBars}>
+        <BarChart data={data}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} />
           <XAxis dataKey="month" axisLine={false} tickLine={false} />
           <YAxis axisLine={false} tickLine={false} tickFormatter={(value) => `$${Number(value) / 1000}k`} />

@@ -23,7 +23,7 @@ type MpReportTask = {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.headers.get("authorization") !== `Bearer ${Deno.env.get("CRON_SECRET")}`) {
+  if (req.headers.get("x-cron-secret") !== Deno.env.get("CRON_SECRET")) {
     return Response.json({ error: "unauthorized" }, { status: 401, headers: corsHeaders });
   }
 

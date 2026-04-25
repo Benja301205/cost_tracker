@@ -1,19 +1,84 @@
 import { AlertCircle, ArrowDownUp, Banknote, CheckCircle2, Clock3, HandCoins, WalletCards } from "lucide-react";
 import { CategoryPie, MonthlyBars } from "@/components/dashboard-charts";
 import { Card, CardTitle } from "@/components/ui/card";
-import { categories, inbox, movements, repayments, splits, transactions } from "@/lib/demo-data";
-import { monthSpendByCategory, splitProgress } from "@/lib/domain";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { money, shortDate } from "@/lib/utils";
 
-export default function DashboardPage() {
-  const categoryData = monthSpendByCategory(transactions, categories);
-  const monthExpenses = transactions.filter((item) => item.kind === "expense").reduce((sum, item) => sum + item.amountArs, 0);
-  const grossOpenSplits = splits.filter((split) => split.status !== "paid" && split.status !== "cancelled").reduce((sum, split) => sum + split.totalAmountArs, 0);
-  const pendingSplitMoney = splits.reduce((sum, split) => sum + splitProgress(split, repayments).pendingAmount, 0);
-  const repaidThisMonth = repayments.reduce((sum, repayment) => sum + repayment.amountArs, 0);
-  const unmatchedCount = movements.filter((movement) => movement.matchStatus === "unmatched").length;
-  const walletMp = transactions.reduce((sum, transaction) => transaction.wallet === "mp" ? sum + (transaction.kind === "income" ? transaction.amountArs : -transaction.amountArs) : sum, 0);
-  const walletCash = transactions.reduce((sum, transaction) => transaction.wallet === "cash" ? sum + (transaction.kind === "income" ? transaction.amountArs : -transaction.amountArs) : sum, 0);
+export const dynamic = "force-dynamic";
+
+type TransactionRow = {
+  id: string;
+  amount_ars: number | string;
+  occurred_at: string;
+  kind: "expense" | "income" | "transfer";
+  merchant: string | null;
+  description: string | null;
+  categoryName: string | null;
+  walletName: "mp" | "cash" | null;
+};
+
+export default async function DashboardPage() {
+  const supabase = createServerSupabaseClient();
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+  const [
+    categoriesResult,
+    transactionsResult,
+    walletResult,
+    splitResult,
+    repaymentResult,
+    movementResult,
+    inboxResult,
+  ] = await Promise.all([
+    supabase.from("categories").select("id,name,sort_order").order("sort_order"),
+    supabase
+      .from("transactions")
+      .select("id,amount_ars,occurred_at,kind,merchant,description,categories(name),wallets(name)")
+      .gte("occurred_at", monthStart)
+      .order("occurred_at", { ascending: false })
+      .limit(80),
+    supabase.from("wallet_balances").select("name,balance_ars"),
+    supabase.from("split_claim_status").select("total_amount_ars,pending_amount_ars,calculated_status"),
+    supabase.from("split_repayments").select("amount_ars,created_at").gte("created_at", monthStart),
+    supabase.from("mp_movements").select("id").eq("match_status", "unmatched").eq("direction", "in"),
+    supabase.from("mp_inbox").select("id").in("status", ["pending", "parse_failed"]),
+  ]);
+
+  const categories = categoriesResult.data ?? [];
+  const transactions = ((transactionsResult.data ?? []) as unknown as Array<Omit<TransactionRow, "categoryName" | "walletName"> & {
+    categories: { name: string } | { name: string }[] | null;
+    wallets: { name: "mp" | "cash" } | { name: "mp" | "cash" }[] | null;
+  }>).map((transaction) => ({
+    ...transaction,
+    categoryName: Array.isArray(transaction.categories) ? transaction.categories[0]?.name ?? null : transaction.categories?.name ?? null,
+    walletName: Array.isArray(transaction.wallets) ? transaction.wallets[0]?.name ?? null : transaction.wallets?.name ?? null,
+  }));
+  const walletBalances = walletResult.data ?? [];
+  const splits = splitResult.data ?? [];
+  const repayments = repaymentResult.data ?? [];
+
+  const monthExpenses = transactions
+    .filter((item) => item.kind === "expense")
+    .reduce((sum, item) => sum + Number(item.amount_ars), 0);
+  const grossOpenSplits = splits
+    .filter((split) => split.calculated_status !== "paid" && split.calculated_status !== "cancelled")
+    .reduce((sum, split) => sum + Number(split.total_amount_ars), 0);
+  const pendingSplitMoney = splits.reduce((sum, split) => sum + Number(split.pending_amount_ars), 0);
+  const repaidThisMonth = repayments.reduce((sum, repayment) => sum + Number(repayment.amount_ars), 0);
+  const unmatchedCount = movementResult.data?.length ?? 0;
+  const inboxCount = inboxResult.data?.length ?? 0;
+  const walletMp = Number(walletBalances.find((wallet) => wallet.name === "mp")?.balance_ars ?? 0);
+  const walletCash = Number(walletBalances.find((wallet) => wallet.name === "cash")?.balance_ars ?? 0);
+  const categoryData = categories
+    .map((category) => ({
+      name: category.name,
+      total: transactions
+        .filter((transaction) => transaction.kind === "expense" && transaction.categoryName === category.name)
+        .reduce((sum, transaction) => sum + Number(transaction.amount_ars), 0),
+    }))
+    .filter((item) => item.total > 0);
+  const monthlyBars = buildMonthlyBars(transactions);
 
   const cards = [
     { label: "Gastos reales del mes", value: money(monthExpenses), icon: WalletCards, note: "post-split" },
@@ -50,9 +115,9 @@ export default function DashboardPage() {
         <Card>
           <div className="flex items-center justify-between">
             <CardTitle>Gastos por rubro</CardTitle>
-            <span className="text-xs text-stone-500">Abril</span>
+            <span className="text-xs text-stone-500">Mes actual</span>
           </div>
-          <CategoryPie data={categoryData} />
+          {categoryData.length ? <CategoryPie data={categoryData} /> : <EmptyChart label="Todavia no hay gastos cargados este mes" />}
           <div className="space-y-2">
             {categoryData.slice(0, 5).map((item) => (
               <div key={item.name} className="flex items-center justify-between text-sm">
@@ -65,7 +130,7 @@ export default function DashboardPage() {
 
         <Card>
           <CardTitle>Ultimos 6 meses</CardTitle>
-          <MonthlyBars />
+          <MonthlyBars data={monthlyBars} />
         </Card>
       </section>
 
@@ -87,25 +152,54 @@ export default function DashboardPage() {
         <Card className="xl:col-span-2">
           <div className="flex items-center justify-between">
             <CardTitle>Ultimos gastos</CardTitle>
-            <span className="text-xs text-stone-500">{inbox.length} pendientes en inbox</span>
+            <span className="text-xs text-stone-500">{inboxCount} pendientes en inbox</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-lg border border-stone-200">
-            {transactions.filter((item) => item.kind === "expense").slice(0, 6).map((transaction) => {
-              const category = categories.find((item) => item.id === transaction.categoryId);
-              return (
+            {transactions.filter((item) => item.kind === "expense").slice(0, 6).map((transaction) => (
                 <div key={transaction.id} className="grid grid-cols-[1fr_auto] gap-3 border-b border-stone-100 p-3 last:border-0 md:grid-cols-[120px_1fr_auto]">
-                  <span className="hidden text-sm text-stone-500 md:block">{shortDate(transaction.occurredAt)}</span>
+                  <span className="hidden text-sm text-stone-500 md:block">{shortDate(transaction.occurred_at)}</span>
                   <div>
-                    <p className="text-sm font-medium">{transaction.merchant}</p>
-                    <p className="text-xs text-stone-500">{category?.name} · {transaction.wallet.toUpperCase()}</p>
+                    <p className="text-sm font-medium">{transaction.merchant ?? transaction.description ?? "Movimiento"}</p>
+                    <p className="text-xs text-stone-500">{transaction.categoryName ?? "Sin rubro"} · {(transaction.walletName ?? "-").toUpperCase()}</p>
                   </div>
-                  <strong className="text-sm">{money(transaction.amountArs)}</strong>
+                  <strong className="text-sm">{money(Number(transaction.amount_ars))}</strong>
                 </div>
-              );
-            })}
+            ))}
+            {!transactions.some((item) => item.kind === "expense") ? (
+              <div className="p-6 text-sm text-stone-500">Sin gastos todavia. Cargá uno desde Telegram o desde Cargar.</div>
+            ) : null}
           </div>
         </Card>
       </section>
     </div>
   );
+}
+
+function EmptyChart({ label }: { label: string }) {
+  return <div className="flex h-72 items-center justify-center rounded-lg bg-stone-50 text-sm text-stone-500">{label}</div>;
+}
+
+function buildMonthlyBars(transactions: TransactionRow[]) {
+  const formatter = new Intl.DateTimeFormat("es-AR", { month: "short" });
+  const months = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date();
+    date.setMonth(date.getMonth() - (5 - index));
+    return {
+      key: `${date.getFullYear()}-${date.getMonth()}`,
+      month: formatter.format(date),
+      ingresos: 0,
+      gastos: 0,
+    };
+  });
+
+  for (const transaction of transactions) {
+    const date = new Date(transaction.occurred_at);
+    const key = `${date.getFullYear()}-${date.getMonth()}`;
+    const bucket = months.find((month) => month.key === key);
+    if (!bucket) continue;
+    if (transaction.kind === "income") bucket.ingresos += Number(transaction.amount_ars);
+    if (transaction.kind === "expense") bucket.gastos += Number(transaction.amount_ars);
+  }
+
+  return months;
 }

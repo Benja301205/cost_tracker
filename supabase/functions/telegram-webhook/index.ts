@@ -27,6 +27,8 @@ Deno.serve(async (req) => {
 
     if (update.callback_query?.data) {
       await handleCallback(chatId, update.callback_query.id, update.callback_query.data);
+    } else if (text.startsWith("/pago")) {
+      await handlePaymentCommand(chatId, text);
     } else if (text.startsWith("/efectivo")) {
       await handleCashCommand(chatId, text);
     } else if (text.startsWith("/pago_split")) {
@@ -36,7 +38,7 @@ Deno.serve(async (req) => {
     } else if (text.startsWith("/saldo")) {
       await sendWalletBalance(chatId);
     } else {
-      await sendTelegram(chatId, "Mandame /efectivo 1500 nafta, /pago_split, /splits o /saldo.");
+      await sendTelegram(chatId, "Mandame /pago, /pago 1500, /efectivo 1500 nafta, /pago_split, /splits o /saldo.");
     }
 
     return Response.json({ ok: true }, { headers: corsHeaders });
@@ -49,6 +51,11 @@ Deno.serve(async (req) => {
 
 async function handleCallback(chatId: number, callbackQueryId: string, data: string) {
   await answerCallback(callbackQueryId);
+  if (data.startsWith("pay:")) {
+    await handlePaymentCallback(chatId, data);
+    return;
+  }
+
   const [scope, movementId, action, extra] = data.split(":");
   if (scope !== "mp" || !movementId || !action) return;
 
@@ -65,6 +72,109 @@ async function handleCallback(chatId: number, callbackQueryId: string, data: str
   } else if (action === "ignore") {
     await resolveIgnored(chatId, movementId);
   }
+}
+
+async function handlePaymentCommand(chatId: number, text: string) {
+  const [, amountText] = text.split(/\s+/);
+  const amount = parseAmount(amountText);
+
+  if (!amount) {
+    await sendTelegramWithKeyboard(chatId, "¿Cuanto gastaste?", [
+      [
+        { text: "$1.000", callback_data: "pay:amount:1000" },
+        { text: "$2.000", callback_data: "pay:amount:2000" },
+      ],
+      [
+        { text: "$5.000", callback_data: "pay:amount:5000" },
+        { text: "$10.000", callback_data: "pay:amount:10000" },
+      ],
+      [{ text: "Otro monto", callback_data: "pay:amount:other" }],
+    ]);
+    return;
+  }
+
+  await askPaymentWallet(chatId, amount);
+}
+
+async function handlePaymentCallback(chatId: number, data: string) {
+  const [, action, amountText, value] = data.split(":");
+  if (action === "amount") {
+    if (amountText === "other") {
+      await sendTelegram(chatId, "Mandame el monto asi: /pago 1500");
+      return;
+    }
+    await askPaymentWallet(chatId, Number(amountText));
+    return;
+  }
+
+  if (action === "wallet") {
+    await askPaymentCategory(chatId, Number(amountText), value === "mp" ? "mp" : "cash");
+    return;
+  }
+
+  if (action === "category") {
+    const wallet = value === "mp" ? "mp" : "cash";
+    const sortOrder = Number(data.split(":")[4]);
+    await registerButtonPayment(chatId, Number(amountText), wallet, sortOrder);
+  }
+}
+
+async function askPaymentWallet(chatId: number, amount: number) {
+  await sendTelegramWithKeyboard(chatId, `Pago de $${amount.toLocaleString("es-AR")}\n¿Por que medio?`, [
+    [
+      { text: "Mercado Pago", callback_data: `pay:wallet:${amount}:mp` },
+      { text: "Efectivo", callback_data: `pay:wallet:${amount}:cash` },
+    ],
+  ]);
+}
+
+async function askPaymentCategory(chatId: number, amount: number, wallet: "mp" | "cash") {
+  const supabase = serviceClient();
+  const { data: categories } = await supabase
+    .from("categories")
+    .select("name,sort_order")
+    .eq("is_active", true)
+    .order("sort_order");
+
+  const rows = (categories ?? []).map((category) => [{
+    text: category.name,
+    callback_data: `pay:category:${amount}:${wallet}:${category.sort_order}`,
+  }]);
+
+  await sendTelegramWithKeyboard(chatId, `Elegí rubro para $${amount.toLocaleString("es-AR")} (${wallet.toUpperCase()})`, rows);
+}
+
+async function registerButtonPayment(chatId: number, amount: number, walletName: "mp" | "cash", categorySortOrder: number) {
+  const supabase = serviceClient();
+  const [{ data: wallet }, { data: category }, { data: fallback }] = await Promise.all([
+    supabase.from("wallets").select("id,name").eq("name", walletName).single(),
+    supabase.from("categories").select("id,name").eq("sort_order", categorySortOrder).single(),
+    supabase.from("categories").select("id,name").eq("name", "Varios").single(),
+  ]);
+
+  const selectedCategory = category ?? fallback;
+  const { error } = await supabase.from("transactions").insert({
+    amount_ars: amount,
+    occurred_at: new Date().toISOString(),
+    category_id: selectedCategory?.id,
+    wallet_id: wallet?.id,
+    kind: "expense",
+    merchant: selectedCategory?.name ?? "Pago",
+    description: "Cargado por /pago",
+    source: "telegram",
+  });
+
+  if (error) {
+    await sendTelegram(chatId, `No pude registrar el pago: ${error.message}`);
+    return;
+  }
+
+  await sendTelegram(chatId, `Registrado: $${amount.toLocaleString("es-AR")} en ${selectedCategory?.name ?? "Varios"} (${walletName.toUpperCase()}).`);
+}
+
+function parseAmount(value?: string) {
+  const amount = Number((value ?? "").replace(".", "").replace(",", "."));
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
 async function handleCashCommand(chatId: number, text: string) {

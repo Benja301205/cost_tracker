@@ -2,7 +2,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { serviceClient } from "../_shared/supabase.ts";
 
 Deno.serve(async (req) => {
-  if (req.headers.get("authorization") !== `Bearer ${Deno.env.get("CRON_SECRET")}`) {
+  if (req.headers.get("x-cron-secret") !== Deno.env.get("CRON_SECRET")) {
     return Response.json({ error: "unauthorized" }, { status: 401, headers: corsHeaders });
   }
 
