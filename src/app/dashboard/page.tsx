@@ -18,35 +18,12 @@ type TransactionRow = {
 };
 
 export default async function DashboardPage() {
-  const supabase = createServerSupabaseClient();
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const data = await loadDashboardData(monthStart);
 
-  const [
-    categoriesResult,
-    transactionsResult,
-    walletResult,
-    splitResult,
-    repaymentResult,
-    movementResult,
-    inboxResult,
-  ] = await Promise.all([
-    supabase.from("categories").select("id,name,sort_order").order("sort_order"),
-    supabase
-      .from("transactions")
-      .select("id,amount_ars,occurred_at,kind,merchant,description,categories(name),wallets(name)")
-      .gte("occurred_at", monthStart)
-      .order("occurred_at", { ascending: false })
-      .limit(80),
-    supabase.from("wallet_balances").select("name,balance_ars"),
-    supabase.from("split_claim_status").select("total_amount_ars,pending_amount_ars,calculated_status"),
-    supabase.from("split_repayments").select("amount_ars,created_at").gte("created_at", monthStart),
-    supabase.from("mp_movements").select("id").eq("match_status", "unmatched").eq("direction", "in"),
-    supabase.from("mp_inbox").select("id").in("status", ["pending", "parse_failed"]),
-  ]);
-
-  const categories = categoriesResult.data ?? [];
-  const transactions = ((transactionsResult.data ?? []) as unknown as Array<Omit<TransactionRow, "categoryName" | "walletName"> & {
+  const categories = data.categories;
+  const transactions = (data.transactions as unknown as Array<Omit<TransactionRow, "categoryName" | "walletName"> & {
     categories: { name: string } | { name: string }[] | null;
     wallets: { name: "mp" | "cash" } | { name: "mp" | "cash" }[] | null;
   }>).map((transaction) => ({
@@ -54,9 +31,9 @@ export default async function DashboardPage() {
     categoryName: Array.isArray(transaction.categories) ? transaction.categories[0]?.name ?? null : transaction.categories?.name ?? null,
     walletName: Array.isArray(transaction.wallets) ? transaction.wallets[0]?.name ?? null : transaction.wallets?.name ?? null,
   }));
-  const walletBalances = walletResult.data ?? [];
-  const splits = splitResult.data ?? [];
-  const repayments = repaymentResult.data ?? [];
+  const walletBalances = data.walletBalances;
+  const splits = data.splits;
+  const repayments = data.repayments;
 
   const monthExpenses = transactions
     .filter((item) => item.kind === "expense")
@@ -66,8 +43,8 @@ export default async function DashboardPage() {
     .reduce((sum, split) => sum + Number(split.total_amount_ars), 0);
   const pendingSplitMoney = splits.reduce((sum, split) => sum + Number(split.pending_amount_ars), 0);
   const repaidThisMonth = repayments.reduce((sum, repayment) => sum + Number(repayment.amount_ars), 0);
-  const unmatchedCount = movementResult.data?.length ?? 0;
-  const inboxCount = inboxResult.data?.length ?? 0;
+  const unmatchedCount = data.unmatchedCount;
+  const inboxCount = data.inboxCount;
   const walletMp = Number(walletBalances.find((wallet) => wallet.name === "mp")?.balance_ars ?? 0);
   const walletCash = Number(walletBalances.find((wallet) => wallet.name === "cash")?.balance_ars ?? 0);
   const categoryData = categories
@@ -93,6 +70,7 @@ export default async function DashboardPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-stone-950">Dashboard</h1>
         <p className="mt-1 text-sm text-stone-600">Resumen mensual con gastos reales, splits y conciliacion asistida.</p>
+        {data.error ? <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{data.error}</p> : null}
       </div>
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -173,6 +151,67 @@ export default async function DashboardPage() {
       </section>
     </div>
   );
+}
+
+async function loadDashboardData(monthStart: string) {
+  try {
+    const supabase = createServerSupabaseClient();
+    const [
+      categoriesResult,
+      transactionsResult,
+      walletResult,
+      splitResult,
+      repaymentResult,
+      movementResult,
+      inboxResult,
+    ] = await Promise.all([
+      supabase.from("categories").select("id,name,sort_order").order("sort_order"),
+      supabase
+        .from("transactions")
+        .select("id,amount_ars,occurred_at,kind,merchant,description,categories(name),wallets(name)")
+        .gte("occurred_at", monthStart)
+        .order("occurred_at", { ascending: false })
+        .limit(80),
+      supabase.from("wallet_balances").select("name,balance_ars"),
+      supabase.from("split_claim_status").select("total_amount_ars,pending_amount_ars,calculated_status"),
+      supabase.from("split_repayments").select("amount_ars,created_at").gte("created_at", monthStart),
+      supabase.from("mp_movements").select("id").eq("match_status", "unmatched").eq("direction", "in"),
+      supabase.from("mp_inbox").select("id").in("status", ["pending", "parse_failed"]),
+    ]);
+
+    const firstError = [
+      categoriesResult.error,
+      transactionsResult.error,
+      walletResult.error,
+      splitResult.error,
+      repaymentResult.error,
+      movementResult.error,
+      inboxResult.error,
+    ].find(Boolean);
+
+    return {
+      categories: categoriesResult.data ?? [],
+      transactions: transactionsResult.data ?? [],
+      walletBalances: walletResult.data ?? [],
+      splits: splitResult.data ?? [],
+      repayments: repaymentResult.data ?? [],
+      unmatchedCount: movementResult.data?.length ?? 0,
+      inboxCount: inboxResult.data?.length ?? 0,
+      error: firstError ? `Supabase: ${firstError.message}` : null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "No se pudo conectar con Supabase";
+    return {
+      categories: [],
+      transactions: [],
+      walletBalances: [],
+      splits: [],
+      repayments: [],
+      unmatchedCount: 0,
+      inboxCount: 0,
+      error: message,
+    };
+  }
 }
 
 function EmptyChart({ label }: { label: string }) {
