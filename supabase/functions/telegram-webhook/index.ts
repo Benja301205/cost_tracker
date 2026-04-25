@@ -14,31 +14,37 @@ type TelegramUpdate = {
 };
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.headers.get("x-telegram-bot-api-secret-token") !== Deno.env.get("TELEGRAM_WEBHOOK_SECRET")) {
-    return Response.json({ error: "unauthorized" }, { status: 401, headers: corsHeaders });
+  try {
+    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+    if (req.headers.get("x-telegram-bot-api-secret-token") !== Deno.env.get("TELEGRAM_WEBHOOK_SECRET")) {
+      return Response.json({ error: "unauthorized" }, { status: 401, headers: corsHeaders });
+    }
+
+    const update = (await req.json()) as TelegramUpdate;
+    const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
+    const text = update.message?.text?.trim() ?? "";
+    if (!chatId) return Response.json({ ok: true }, { headers: corsHeaders });
+
+    if (update.callback_query?.data) {
+      await handleCallback(chatId, update.callback_query.id, update.callback_query.data);
+    } else if (text.startsWith("/efectivo")) {
+      await handleCashCommand(chatId, text);
+    } else if (text.startsWith("/pago_split")) {
+      await sendOpenSplits(chatId);
+    } else if (text.startsWith("/splits")) {
+      await sendOpenSplits(chatId);
+    } else if (text.startsWith("/saldo")) {
+      await sendWalletBalance(chatId);
+    } else {
+      await sendTelegram(chatId, "Mandame /efectivo 1500 nafta, /pago_split, /splits o /saldo.");
+    }
+
+    return Response.json({ ok: true }, { headers: corsHeaders });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("telegram-webhook failed", error);
+    return Response.json({ ok: false, error: message }, { status: 500, headers: corsHeaders });
   }
-
-  const update = (await req.json()) as TelegramUpdate;
-  const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
-  const text = update.message?.text?.trim() ?? "";
-  if (!chatId) return Response.json({ ok: true }, { headers: corsHeaders });
-
-  if (update.callback_query?.data) {
-    await handleCallback(chatId, update.callback_query.id, update.callback_query.data);
-  } else if (text.startsWith("/efectivo")) {
-    await handleCashCommand(chatId, text);
-  } else if (text.startsWith("/pago_split")) {
-    await sendOpenSplits(chatId);
-  } else if (text.startsWith("/splits")) {
-    await sendOpenSplits(chatId);
-  } else if (text.startsWith("/saldo")) {
-    await sendWalletBalance(chatId);
-  } else {
-    await sendTelegram(chatId, "Mandame /efectivo 1500 nafta, /pago_split, /splits o /saldo.");
-  }
-
-  return Response.json({ ok: true }, { headers: corsHeaders });
 });
 
 async function handleCallback(chatId: number, callbackQueryId: string, data: string) {
